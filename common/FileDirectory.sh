@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 
 LOCALDIR=$(cd $(dirname $0) && pwd && cd - &> /dev/null)
-BASEDIR=$(cd ${LOCALDIR}/.. && pwd && cd - &> /dev/null)
-source ${BASEDIR}/Common/Log.sh
+BASEDIR=${LOCALDIR}
+source ${BASEDIR}/common/Log.sh
 
 function remove_file(){
   file=$1
