@@ -24,7 +24,7 @@ source "${BASE_PATH}"/common/Log.sh
 # shellcheck source=/dev/null
 source "${BASE_PATH}"/common/NetWork.sh
 # shellcheck source=/dev/null
-source "${BASE_PATH}"/conf/analyze.conf
+source "${BASE_PATH}"/common/Common.sh
 
 function print_warning() {
     cat << EOF
