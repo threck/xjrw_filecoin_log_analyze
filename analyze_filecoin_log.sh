@@ -66,6 +66,7 @@ done
 ################
 if [[ "${run_type}" == "new" ]]; then
     # 1. miner.log
+    mkdir -p $(dirname ${miner_target_log})
     cp ${miner_source_log} ${miner_target_log}
     # 2. worker.log
     for ip in $(cat ${filecoin_cluster_info} |awk '{print $1}')

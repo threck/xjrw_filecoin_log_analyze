@@ -73,7 +73,6 @@ function sync_from_remote(){
     [ -z "${source_dir}" ] && echo "source_dir is null! please check!" && return 1
     [ -z "${target_dir}" ] && echo "target_dir is null! please check!" && return 1
 
-    log_info "sync file: ${source_ip}:${source_dir} -> ${target_dir} ..."
     {
     expect <<EOF
     set timeout 1800
@@ -86,7 +85,13 @@ function sync_from_remote(){
     exit [lindex \$result 3]
 EOF
     } &> /dev/null
-    return $?
+    rt_val=$?
+    if [ -e "${target_dir}" ]; then
+        log_info "sync file: ${source_ip}:${source_dir} -> ${target_dir} ... success"
+    else
+        log_err "sync file: ${source_ip}:${source_dir} -> ${target_dir} ... failed"
+    fi
+    return ${rt_val}
 }
 
 function check_network_connection() {
