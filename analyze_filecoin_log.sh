@@ -43,6 +43,7 @@ miner_source_log=$(get_param "miner_log")
 miner_target_log="${BASE_PATH}/log/miner.log"
 worker_source_log=$(get_param "worker_log")
 filecoin_cluster_info="${BASE_PATH}/tmp/filecoin_cluster_info.tmp"
+sealing_jobs_log="${BASE_PATH}/log/sealing_jobs.log"
 
 mkdir -p "${BASE_PATH}"/tmp
 mkdir -p "${BASE_PATH}"/summary
@@ -50,6 +51,7 @@ mkdir -p "${BASE_PATH}"/log
 
 if [[ "${run_type}" == "new" ]]; then
     # gen filecoin_cluster_info file if run_type is new
+    log_info "create filecoin_cluster_info: ${filecoin_cluster_info}"
     nodenames=$(${lotus_miner} sealing workers |grep Worker |grep -v RD |awk '{print $4}')
     sector_size=$(${lotus_miner} info |grep Miner: |awk '{print $3" "$4}' |cut -d'(' -f2)
 
@@ -78,6 +80,7 @@ fi
 ################
 if [[ "${run_type}" == "new" ]]; then
     # 1. miner.log
+    log_info "backup miner.log ..."
     cp ${miner_source_log} ${miner_target_log}
     # 2. worker.log
     for ip in $(cat ${filecoin_cluster_info} |grep -v GiB |awk '{print $1}')
@@ -85,6 +88,9 @@ if [[ "${run_type}" == "new" ]]; then
         nodename_tmp=$(grep ${ip} ${filecoin_cluster_info} |awk '{print $2}')
         sync_from_remote ${ip} ${user} ${pwd} ${worker_source_log} ${BASE_PATH}/log/worker_${nodename_tmp}.log
     done
+    # 3. sealing jobs log
+    log_info "create ${sealing_jobs_log} ..."
+    ${lotus_miner} sealing jobs &> ${sealing_jobs_log}
 fi
 
 ################
@@ -123,38 +129,48 @@ done
 function get_sector_id_of_phase() {
     nodename=$1
     phase=$2
-    [[ "${phase}" == "AddPiece" ]] && phase_low="addpiece"
-    [[ "${phase}" == "SealPreCommit1" ]] && phase_low="precommit/1"
-    [[ "${phase}" == "SealPreCommit2" ]] && phase_low="precommit/2"
-    [[ "${phase}" == "SealCommit1" ]] && phase_low="commit/1"
-    [[ "${phase}" == "SealCommit2" ]] && phase_low="commit/2"
+    [[ "${phase}" == "AddPiece" ]] && phase_low="addpiece" && phase_simple="AP"
+    [[ "${phase}" == "SealPreCommit1" ]] && phase_low="precommit/1" && phase_simple="PC1"
+    [[ "${phase}" == "SealPreCommit2" ]] && phase_low="precommit/2" && phase_simple="PC2"
+    [[ "${phase}" == "SealCommit1" ]] && phase_low="commit/1" && phase_simple="C1"
+    [[ "${phase}" == "SealCommit2" ]] && phase_low="commit/2" && phase_simple="C2"
     # assign sectors
     assign_sectors=$(grep assign ${miner_target_log} |grep ${nodename} |grep /${phase_low} |awk '{print $9}' |cut -d'}' -f1 |sort |uniq)
     assign_sectors_nu=()
     normal_seal_sectors=()
     abnormal_seal_sectors=()
     sealing_sectors=()
+    waiting_sectors=()
     for sector in ${assign_sectors}
     do
         assign_sectors_nu[${#assign_sectors_nu[@]}]=${sector}
-        line=$(grep " ${sector}\}" "${BASE_PATH}/tmp/sealing_time.tmp" |grep ${phase} |wc -l)
-        if [ "${line}" -eq 1 ]; then
+        line=$(grep " ${sector}\} " "${BASE_PATH}/tmp/sealing_time.tmp" |grep ${phase} |wc -l)
+        grep " ${sector} " ${sealing_jobs_log} |grep running |grep " ${phase_simple} " &> /dev/null
+        is_running=$?
+        if [ "${line}" -eq 1 ] && [ "${is_running}" -ne 0 ]; then
             # normal seal sectors
             normal_seal_sectors[${#normal_seal_sectors[@]}]=${sector}
-        elif [ "${line}" -gt 1 ]; then
+        elif [ "${line}" -gt 1 ] && [ "${is_running}" -ne 0  ]; then
             # abnormal seal sectors
             abnormal_seal_sectors[${#abnormal_seal_sectors[@]}]=${sector}
-        elif [ "${line}" -eq 0 ]; then
+        elif [ "${is_running}" -eq 0 ]; then
             # sealing sectors
-            sealing_sectors[${#sealing_sectors[@]}]=${sector}
+            sealing_time_tmp=$(grep " ${sector} " ${sealing_jobs_log} |grep running |grep " ${phase_simple} " |awk '{print $7}')
+            sealing_sectors[${#sealing_sectors[@]}]="${sector}(${sealing_time_tmp})"
+        else
+            # waiting sectors
+            waiting_sectors[${#waiting_sectors[@]}]=${sector}
         fi
     done
 
-    echo "##${phase}:"
+    echo "--------------"
+    echo "${phase}:"
+    echo "--------------"
     echo "assign_sectors(${#assign_sectors_nu[@]}):" "${assign_sectors_nu[@]}"
     echo "normal_seal_sectors(${#normal_seal_sectors[@]}):" "${normal_seal_sectors[@]}"
     echo "abnormal_seal_sectors(${#abnormal_seal_sectors[@]}):" "${abnormal_seal_sectors[@]}"
     echo "sealing_sectors(${#sealing_sectors[@]}):" "${sealing_sectors[@]}"
+    echo "waiting_sectors(${#waiting_sectors[@]}):" "${waiting_sectors[@]}"
     echo "normal_seal_sectors(${#normal_seal_sectors[@]}):${phase}:" "${normal_seal_sectors[@]}" >> ${BASE_PATH}/tmp/normal_sealed_${nodename}.tmp
     echo ""
 }
@@ -179,6 +195,7 @@ function get_average_time() {
 # kinds of sectors list
 for nodename in $(cat ${filecoin_cluster_info} |grep -v GiB |awk '{print $2}')
 do
+    log_info "analyze ${nodename} log ."
     {
     ip=$(grep ${nodename} /etc/hosts |awk '{print $1}')
 
@@ -194,10 +211,15 @@ do
         # sector is sealing on ssd or mem
         woker_target_log="${BASE_PATH}/log/worker_${nodename}.log"
         sector_on_ssd=$(grep 'is ssd:true' ${woker_target_log} |awk '{print $6}' |awk -F"[-\\\]]" '{print $3}' |sort |uniq)
+        sector_on_ssd_nu=$(grep 'is ssd:true' ${woker_target_log} |awk '{print $6}' |awk -F"[-\\\]]" '{print $3}' |sort |uniq |wc -l)
         sector_on_mem=$(grep 'is ssd:false' ${woker_target_log} |awk '{print $6}' |awk -F"[-\\\]]" '{print $3}' |sort |uniq)
-        echo ""
-        echo "P1_sector_on_ssd:" ${sector_on_ssd}
-        echo "P1_sector_on_mem:" ${sector_on_mem}
+        sector_on_mem_nu=$(grep 'is ssd:false' ${woker_target_log} |awk '{print $6}' |awk -F"[-\\\]]" '{print $3}' |sort |uniq |wc -l)
+
+        echo "###########"
+        echo "# P1 TYPE #"
+        echo "###########"
+        echo "P1_sector_on_ssd(${sector_on_ssd_nu}):" ${sector_on_ssd}
+        echo "P1_sector_on_mem(${sector_on_mem_nu}):" ${sector_on_mem}
         echo ""
 
         # summary
@@ -209,7 +231,8 @@ do
         # p2_eat_p1_nu_theory
         p2_eat_p1_nu_theory=$(echo "scale=2;${average_p1}/${average_p2}" |bc)
         # p2_eat_p1_nu_actual
-        if [ ${p2_eat_p1_nu_theory} -le ${sector_nu} ]; then
+        if [ $(echo "${p2_eat_p1_nu_theory} <= ${sector_nu}" |bc) -eq 1 ]; then
+        #if [ ${p2_eat_p1_nu_theory} -le ${sector_nu} ]; then
             p2_eat_p1_nu_actual=${p2_eat_p1_nu_theory}
         else
             p2_eat_p1_nu_actual=${sector_nu}
@@ -247,6 +270,8 @@ average_c2:$(echo "scale=2;${average_c2}/60" |bc)m
 EOF
     fi
     } > "${BASE_PATH}/summary/summary_${nodename}.txt"
+    log_info "analyze ${nodename} log finished."
+    log_info "check summary in : [ ${BASE_PATH}/summary/summary_${nodename}.txt ]"
 done
 
-
+log_info "game over! bye bye"
