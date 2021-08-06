@@ -22,13 +22,28 @@ sealing_time_file="${BASE_PATH}"/tmp/sealing_time.tmp
 sealing_sector_dir="${BASE_PATH}"/tmp/sealing_sectors
 
 ## sector log
-echo "==sector log:"
-cat ${sealing_sector_dir}/${sector_id}.log
+cat << EOF
+
+##############
+# SECTOR LOG #
+##############
+EOF
+cat ${sealing_sector_dir}/${sector_id}.tmp
 
 ## spended time on each phase
-echo "==each phase spend time:"
+cat << EOF
+
+##############
+# PHASE TIME #
+##############
+EOF
 grep cast ${sealing_time_file} |grep " ${sector_id}} "
 
 ## detail log
-echo "==detail log:"
+cat << EOF
+
+##############
+# DETAIL LOG #
+##############
+EOF
 grep "\-${sector_id}\]" "${BASE_PATH}"/log/worker_node*.log

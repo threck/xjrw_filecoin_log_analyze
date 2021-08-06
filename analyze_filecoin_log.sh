@@ -80,7 +80,7 @@ if [[ "${run_type}" == "new" ]]; then
     # 1. miner.log
     cp ${miner_source_log} ${miner_target_log}
     # 2. worker.log
-    for ip in $(cat ${filecoin_cluster_info} |awk '{print $1}')
+    for ip in $(cat ${filecoin_cluster_info} |grep -v GiB |awk '{print $1}')
     do
         nodename_tmp=$(grep ${ip} ${filecoin_cluster_info} |awk '{print $2}')
         sync_from_remote ${ip} ${user} ${pwd} ${worker_source_log} ${BASE_PATH}/log/worker_${nodename_tmp}.log
@@ -100,7 +100,7 @@ do
 done
 
 # 2. sealing_time.tmp
-for nodename in $(cat ${filecoin_cluster_info} |awk '{print $2}')
+for nodename in $(cat ${filecoin_cluster_info} |grep -v GiB |awk '{print $2}')
 do
     {
     echo "AP:"
@@ -150,7 +150,7 @@ function get_sector_id_of_phase() {
         fi
     done
 
-    echo "==${phase}:"
+    echo "##${phase}:"
     echo "assign_sectors(${#assign_sectors_nu[@]}):" "${assign_sectors_nu[@]}"
     echo "normal_seal_sectors(${#normal_seal_sectors[@]}):" "${normal_seal_sectors[@]}"
     echo "abnormal_seal_sectors(${#abnormal_seal_sectors[@]}):" "${abnormal_seal_sectors[@]}"
@@ -177,7 +177,7 @@ function get_average_time() {
 }
 
 # kinds of sectors list
-for nodename in $(cat ${filecoin_cluster_info} |awk '{print $2}')
+for nodename in $(cat ${filecoin_cluster_info} |grep -v GiB |awk '{print $2}')
 do
     {
     ip=$(grep ${nodename} /etc/hosts |awk '{print $1}')
