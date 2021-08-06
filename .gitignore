@@ -3,3 +3,4 @@ other
 *.pyc
 *.log
 *.gitkeep*
+tmp

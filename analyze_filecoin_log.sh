@@ -35,38 +35,49 @@ you must make sure you've write all workers' ip-nodename info into file:/etc/hos
 #######################################
 EOF
 }
-
+print_warning
 user=$(get_param "user")
 pwd=$(get_param "pwd")
 lotus_miner=$(get_param "lotus_miner")
 miner_source_log=$(get_param "miner_log")
 miner_target_log="${BASE_PATH}/log/miner.log"
 worker_source_log=$(get_param "worker_log")
-nodenames=$(${lotus_miner} sealing workers |grep Worker |grep -v RD |awk '{print $4}')
 filecoin_cluster_info="${BASE_PATH}/tmp/filecoin_cluster_info.tmp"
 
-# gen filecoin_cluster_info file
 mkdir -p "${BASE_PATH}"/tmp
-rm -rf "${BASE_PATH}"/tmp/filecoin_cluster_info.tmp
-for nodename in ${nodenames}
-do
-    tmp_ip=$(grep ${nodename} /etc/hosts |awk '{print $1}')
-    tmp_worker_type=$(${lotus_miner} sealing workers |grep Worker |grep ${nodename} |awk '{print $6}')
-    if [[ ${tmp_worker_type} == "tasks" ]]; then
-        tmp_worker_state="disable"
-        tmp_worker_type=$(${lotus_miner} sealing workers |grep Worker |grep ${nodename} |awk '{print $7}')
-    else
-        tmp_worker_state="online"
-    fi
-    echo "${tmp_ip} ${nodename} ${tmp_worker_type} ${tmp_worker_state}" >> ${filecoin_cluster_info}
-done
+mkdir -p "${BASE_PATH}"/summary
+mkdir -p "${BASE_PATH}"/log
+
+if [[ "${run_type}" == "new" ]]; then
+    # gen filecoin_cluster_info file if run_type is new
+    nodenames=$(${lotus_miner} sealing workers |grep Worker |grep -v RD |awk '{print $4}')
+    sector_size=$(${lotus_miner} info |grep Miner: |awk '{print $3" "$4}' |cut -d'(' -f2)
+
+    rm -rf ${filecoin_cluster_info}
+    echo "${sector_size}" >> ${filecoin_cluster_info}
+    for nodename in ${nodenames}
+    do
+        tmp_ip=$(grep ${nodename} /etc/hosts |awk '{print $1}')
+        tmp_worker_type=$(${lotus_miner} sealing workers |grep Worker |grep ${nodename} |awk '{print $6}')
+        if [[ ${tmp_worker_type} == "tasks" ]]; then
+            tmp_worker_state="disable"
+            tmp_worker_type=$(${lotus_miner} sealing workers |grep Worker |grep ${nodename} |awk '{print $7}')
+        else
+            tmp_worker_state="online"
+        fi
+        echo "${tmp_ip} ${nodename} ${tmp_worker_type} ${tmp_worker_state}" >> ${filecoin_cluster_info}
+    done
+else
+    # get filecoin_cluster_info file if run_type is old
+    nodenames=$(grep -v 'GiB' ${filecoin_cluster_info} |awk '{print $2}')
+    sector_size=$(grep 'GiB' ${filecoin_cluster_info} |awk '{print $1}')
+fi
 
 ################
 # prepare some logs
 ################
 if [[ "${run_type}" == "new" ]]; then
     # 1. miner.log
-    mkdir -p $(dirname ${miner_target_log})
     cp ${miner_source_log} ${miner_target_log}
     # 2. worker.log
     for ip in $(cat ${filecoin_cluster_info} |awk '{print $1}')
@@ -79,15 +90,16 @@ fi
 ################
 # gen some logs
 ################
-# 1. sealing_sector.log
-rm -rf ${BASE_PATH}/log/sealing_sector.log
+# 1. sealing_sector.tmp
+rm -rf ${BASE_PATH}/tmp/sealing_sector.tmp
 sector_ids=$(grep assign ${miner_target_log} |awk '{print $9}' |cut -d'}' -f1 |sort |uniq)
+mkdir -p ${BASE_PATH}/tmp/sealing_sectors
 for sector_id in ${sector_ids}
 do
-    ${lotus_miner} sectors status --log ${sector_id} >> ${BASE_PATH}/log/sealing_sector.log 2>1&
+    ${lotus_miner} sectors status --log ${sector_id} &> ${BASE_PATH}/tmp/sealing_sectors/${sector_id}.tmp &
 done
 
-# 2. sealing_time.log
+# 2. sealing_time.tmp
 for nodename in $(cat ${filecoin_cluster_info} |awk '{print $2}')
 do
     {
@@ -101,7 +113,7 @@ do
     grep cast ${miner_target_log} |grep SealCommit1  # of c1
     echo "C2:"
     grep cast ${miner_target_log} |grep SealCommit2  # of c2
-    } >  "${BASE_PATH}/log/sealing_time.log"
+    } >  "${BASE_PATH}/tmp/sealing_time.tmp"
 done
 
 ##################
@@ -125,7 +137,7 @@ function get_sector_id_of_phase() {
     for sector in ${assign_sectors}
     do
         assign_sectors_nu[${#assign_sectors_nu[@]}]=${sector}
-        line=$(grep " ${sector}\}" "${BASE_PATH}/log/sealing_time.log" |grep ${phase} |wc -l)
+        line=$(grep " ${sector}\}" "${BASE_PATH}/tmp/sealing_time.tmp" |grep ${phase} |wc -l)
         if [ "${line}" -eq 1 ]; then
             # normal seal sectors
             normal_seal_sectors[${#normal_seal_sectors[@]}]=${sector}
@@ -143,18 +155,18 @@ function get_sector_id_of_phase() {
     echo "normal_seal_sectors(${#normal_seal_sectors[@]}):" "${normal_seal_sectors[@]}"
     echo "abnormal_seal_sectors(${#abnormal_seal_sectors[@]}):" "${abnormal_seal_sectors[@]}"
     echo "sealing_sectors(${#sealing_sectors[@]}):" "${sealing_sectors[@]}"
-    echo "normal_seal_sectors(${#normal_seal_sectors[@]}):${phase}:" "${normal_seal_sectors[@]}" >> ${BASE_PATH}/log/normal_sealed_${nodename}.log
+    echo "normal_seal_sectors(${#normal_seal_sectors[@]}):${phase}:" "${normal_seal_sectors[@]}" >> ${BASE_PATH}/tmp/normal_sealed_${nodename}.tmp
     echo ""
 }
 
 function get_average_time() {
     nodename=$1
     phase=$2
-    sectors=$(grep "${phase}" ${BASE_PATH}/log/normal_sealed_${nodename}.log |awk -F':' '{print $3}')
+    sectors=$(grep "${phase}" ${BASE_PATH}/tmp/normal_sealed_${nodename}.tmp |awk -F':' '{print $3}')
     lst_time=()
     for i in ${sectors}
     do
-        real_time=$(grep " ${i}\} " "${BASE_PATH}/log/sealing_time.log" |grep ${phase} |awk '{print $12}')
+        real_time=$(grep " ${i}\} " "${BASE_PATH}/tmp/sealing_time.tmp" |grep ${phase} |awk '{print $12}')
         echo ${real_time} |grep "ms" &> /dev/null
         if [ $? -ne 0 ]; then
             real_time=$(convert_time_to_second ${real_time})
@@ -169,10 +181,9 @@ for nodename in $(cat ${filecoin_cluster_info} |awk '{print $2}')
 do
     {
     ip=$(grep ${nodename} /etc/hosts |awk '{print $1}')
-    sector_size=$(${lotus_miner} info |grep Miner: |awk '{print $3" "$4}' |cut -d'(' -f2)
 
-    rm -rf ${BASE_PATH}/log/normal_sealed_${nodename}.log  # clean before create a new log
-    grep "${nodename}" "${BASE_PATH}"/tmp/filecoin_cluster_info.tmp |grep ' C2 '
+    rm -rf ${BASE_PATH}/tmp/normal_sealed_${nodename}.tmp  # clean before create a new log
+    grep "${nodename}" ${filecoin_cluster_info} |grep ' C2 '
     if [ $? -ne 0 ]; then
         # gen sectors info for each stage
         get_sector_id_of_phase "${nodename}" 'AddPiece'
@@ -235,8 +246,7 @@ average_c2:$(echo "scale=2;${average_c2}/60" |bc)m
 
 EOF
     fi
-
-    } > "${BASE_PATH}/log/summary_${nodename}.txt"
+    } > "${BASE_PATH}/summary/summary_${nodename}.txt"
 done
 
 
